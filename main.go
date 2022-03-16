@@ -2,8 +2,10 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -13,7 +15,12 @@ import (
 	"golang.org/x/text/encoding/charmap"
 )
 
-const WSDL = "https://webservice.correios.com.br:443/service/rastro/Rastro.wsdl"
+var (
+	endpoint = flag.String("e", "https://webservice.correios.com.br:443/service/rastro", "endpoint do webservice sro")
+	objeto   = flag.String("o", "QK478713098BR", "objeto a ser rastreado")
+	usuario  = flag.String("u", "", "nome de usuario")
+	senha    = flag.String("p", "", "senha do usuario")
+)
 
 //IsoUtf8 converte de ISO para UTF-8
 func IsoUtf8(b []byte) ([]byte, error) {
@@ -34,20 +41,22 @@ type fault struct {
 }
 
 type BuscaEventosResponse struct {
-	XML  xml.Name `xml:"Envelope"`
 	Body struct {
 		BuscaEventosResponse struct {
-			Evento struct {
-				Tipo      string `xml:"tipo"`
-				Status    string `xml:"string"`
-				Data      string `xml:"data"`
-				Hora      string `xml:"hora"`
-				Descricao string `xml:"descricao"`
-				Local     string `xml:"local"`
-				Codigo    string `xml:"codigo"`
-				Cidade    string `xml:"cidade"`
-				UF        string `xml:"uf"`
-			} `xml:"evento"`
+			Return struct {
+				Objeto struct {
+					Evento struct {
+						Tipo      string `xml:"tipo"`
+						Status    string `xml:"status"`
+						Data      string `xml:"data"`
+						Hora      string `xml:"hora"`
+						Descricao string `xml:"descricao"`
+						Codigo    string `xml:"codigo"`
+						Cidade    string `xml:"cidade"`
+						UF        string `xml:"uf"`
+					} `xml:"evento"`
+				} `xml:"objeto"`
+			} `xml:"return"`
 		} `xml:"buscaEventosResponse"`
 	} `xml:"Body"`
 }
@@ -55,28 +64,35 @@ type BuscaEventosResponse struct {
 func rastreia(wsdl string, objeto string, usuario string, senha string) (BuscaEventosResponse, error) {
 	rastro := BuscaEventosResponse{}
 	payload := fmt.Sprintf(`
-		<x:Envelope
-		xmlns:x="http://schemas.xmlsoap.org/soap/envelope/"
-		xmlns:res="http://resource.webservice.correios.com.br/">
-		<x:Header/>
-		<x:Body>
-			<res:buscaEventos>
-				<res:usuario>` + usuario + `</res:usuario>
-				<res:senha>` + senha + `</res:senha>
-				<res:tipo>L</res:tipo>
-				<res:resultado>T</res:resultado>
-				<res:lingua>101</res:lingua>
-				<res:objetos>` + objeto + `</res:objetos>
-			</res:buscaEventos>
-		</x:Body>
-	</x:Envelope>
-	`)
-	req, err := http.NewRequest("POST", WSDL, strings.NewReader(payload))
+		<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:res="http://resource.webservice.correios.com.br/">
+			<soapenv:Header/>
+			<soapenv:Body>
+				<res:buscaEventos>
+					<!--Optional:-->
+					<usuario>` + usuario + `</usuario>
+					<!--Optional:-->
+					<senha>` + senha + `</senha>
+					<!--Optional:-->
+					<tipo>L</tipo>
+					<!--Optional:-->
+					<resultado>T</resultado>
+					<!--Optional:-->
+					<lingua>101</lingua>
+					<!--Optional:-->
+					<objetos>` + objeto + `</objetos>
+				</res:buscaEventos>
+			</soapenv:Body>
+		</soapenv:Envelope>
+ 	`)
+	req, err := http.NewRequest("POST", wsdl, strings.NewReader(payload))
 	if err != nil {
 		return rastro, err
 	}
 	http.DefaultClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	res, err := http.DefaultClient.Do(req)
+	if res.StatusCode != 200 {
+		return rastro, errors.New("erro http status: " + res.Status)
+	}
 	if err != nil {
 		return rastro, err
 	}
@@ -94,15 +110,22 @@ func rastreia(wsdl string, objeto string, usuario string, senha string) (BuscaEv
 		_ = xml.Unmarshal([]byte(b), &respError)
 		return rastro, errors.New(respError.Body.Fault.FaultString)
 	}
-	_ = xml.Unmarshal([]byte(b), &rastro)
+	err = xml.Unmarshal([]byte(b), &rastro)
+	if err != nil {
+		return rastro, err
+	}
 	return rastro, nil
 
 }
-
+func printJson(i interface{}) string {
+	s, _ := json.MarshalIndent(i, "", "\t")
+	return string(s)
+}
 func main() {
-	rastro, err := rastreia(WSDL, "QK478713098BR", "ECT", "SRO")
+	flag.Parse()
+	rastro, err := rastreia(*endpoint, *objeto, *usuario, *senha)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("%+v\n", rastro)
+	fmt.Println(printJson(rastro))
 }
